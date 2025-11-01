@@ -1,0 +1,157 @@
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, accuracy_score
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+# --- 9.2: Logistic Regression Model for Outgoing Adult Prediction ---
+
+# 1. Load Data
+longitudinal_path = 'upload/LongitudnalSurveyDataset.xlsx'
+df = pd.read_excel(longitudinal_path)
+
+# 2. Data Cleaning and Preprocessing
+# Drop rows where the target variable is missing and reset index
+df.dropna(subset=['Outgoing_Adult'], inplace=True)
+df.reset_index(drop=True, inplace=True)
+
+# Define the dependent variable (Y)
+Y = df['Outgoing_Adult']
+
+# Define potential independent variables (X)
+# Dropping ID, and the target variable itself.
+# We will use all other columns as potential predictors.
+X = df.drop(columns=['ID', 'Outgoing_Adult'])
+
+# Identify numeric and categorical columns for imputation and scaling
+# For simplicity and to avoid complex encoding for this task, we will treat all remaining columns as numeric
+# and use mean imputation, which is a common strategy for handling missing data in regression.
+# We will use a pipeline for imputation and scaling.
+
+# 3. Feature Engineering and Imputation
+# Impute missing values with the mean of the column
+imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
+X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+X_imputed.index = df.index # Align index with the target variable Y
+
+# 4. Data Splitting (70% Train, 20% Validation, 10% Test/Prediction)
+# First split: 70% Train, 30% Temp (Validation + Test)
+X_train_full, X_temp, Y_train_full, Y_temp = train_test_split(
+    X_imputed, Y, test_size=0.3, random_state=42, stratify=Y
+)
+
+# Second split: 20% Validation, 10% Test (from the 30% Temp)
+X_val, X_test, Y_val, Y_test = train_test_split(
+    X_temp, Y_temp, test_size=1/3, random_state=42, stratify=Y_temp
+)
+
+# Check the sizes
+print(f"Total observations after dropping missing target: {len(df)}")
+print(f"Train set size (70%): {len(X_train_full)}")
+print(f"Validation set size (20%): {len(X_val)}")
+print(f"Test set size (10%): {len(X_test)}")
+
+# 5. Feature Selection using Cross-Validation (L1 Regularization - Lasso)
+# L1 regularization (Lasso) is a common technique for feature selection in linear models.
+# We will use a Logistic Regression model with L1 penalty and cross-validation to find the best C (inverse of regularization strength).
+# A smaller C means stronger regularization and more feature coefficients driven to zero.
+
+# Standardize the data before applying L1 regularization
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train_full)
+X_train_scaled = pd.DataFrame(X_train_scaled, columns=X_train_full.columns)
+X_train_scaled.index = X_train_full.index # Align index with the target variable Y_train_full
+
+# Define a range of C values to test
+C_values = np.logspace(-3, 3, 7)
+best_score = 0
+best_C = 0
+best_model = None
+
+print("\n--- Cross-Validation for Feature Selection (L1 Regularization) ---")
+for C in C_values:
+    # Use liblinear solver for L1 penalty
+    log_reg = LogisticRegression(penalty='l1', C=C, solver='liblinear', random_state=42, max_iter=1000)
+    # Use ROC AUC as the scoring metric for binary classification
+    scores = cross_val_score(log_reg, X_train_scaled, Y_train_full, cv=5, scoring='roc_auc')
+    mean_score = scores.mean()
+    print(f"C={C:.3f}, Mean ROC AUC: {mean_score:.4f}")
+
+    if mean_score > best_score:
+        best_score = mean_score
+        best_C = C
+        best_model = log_reg.fit(X_train_scaled, Y_train_full)
+
+print(f"\nBest C value: {best_C:.3f} with Mean ROC AUC: {best_score:.4f}")
+
+# Identify selected features (coefficients not close to zero)
+# The best_model was trained on X_train_scaled, so we use its columns
+selected_features = X_train_full.columns[best_model.coef_[0] != 0]
+
+# Filter out any columns that might have been dropped due to all-zero coefficients
+# (though unlikely with L1, it's a safety check)
+# The previous line was unnecessary and caused an error. Reverting to the original logic.
+print(f"\nSelected Features ({len(selected_features)}):")
+print(selected_features.tolist())
+
+# 6. Final Model Training with Selected Features (using statsmodels for detailed summary)
+X_train_final = X_train_full[selected_features]
+X_val_final = X_val[selected_features]
+X_test_final = X_test[selected_features]
+
+# Add constant for statsmodels
+X_train_final = sm.add_constant(X_train_final, prepend=False)
+X_val_final = sm.add_constant(X_val_final, prepend=False)
+X_test_final = sm.add_constant(X_test_final, prepend=False)
+
+# Train the final model
+logit_model = sm.Logit(Y_train_full, X_train_final)
+results = logit_model.fit(disp=False) # disp=False suppresses convergence output
+
+# 7. Model Validation
+# Predict probabilities on the validation set
+Y_val_prob = results.predict(X_val_final)
+val_auc = roc_auc_score(Y_val, Y_val_prob)
+
+# Convert probabilities to binary predictions (threshold 0.5)
+Y_val_pred = (Y_val_prob >= 0.5).astype(int)
+val_accuracy = accuracy_score(Y_val, Y_val_pred)
+
+# 8. Model Prediction (on the Test set)
+# Predict probabilities on the test set
+Y_test_prob = results.predict(X_test_final)
+test_auc = roc_auc_score(Y_test, Y_test_prob)
+
+# Convert probabilities to binary predictions (threshold 0.5)
+Y_test_pred = (Y_test_prob >= 0.5).astype(int)
+test_accuracy = accuracy_score(Y_test, Y_test_pred)
+
+# 9. Output Results
+print("\n--- Logistic Regression Model Summary (Training Data) ---")
+print(results.summary())
+
+print("\n--- Model Performance ---")
+print(f"Validation Set (20%):")
+print(f"  ROC AUC Score: {val_auc:.4f}")
+print(f"  Accuracy Score: {val_accuracy:.4f}")
+print(f"Prediction Set (10%):")
+print(f"  ROC AUC Score: {test_auc:.4f}")
+print(f"  Accuracy Score: {test_accuracy:.4f}")
+
+# Save the summary to a file for the final report
+with open('longitudinal_survey_model_summary.txt', 'w') as f:
+    f.write(results.summary().as_text())
+
+# Save predictions for the final report
+prediction_results = pd.DataFrame({
+    'Actual_Outgoing_Adult': Y_test,
+    'Predicted_Outgoing_Adult_Prob': Y_test_prob,
+    'Predicted_Outgoing_Adult_Class': Y_test_pred
+})
+prediction_results.to_csv('longitudinal_survey_predictions.csv', index=False)
+
+print("\nResults saved to 'longitudinal_survey_model_summary.txt' and 'longitudinal_survey_predictions.csv'")
