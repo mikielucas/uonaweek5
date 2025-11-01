@@ -1,0 +1,101 @@
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+
+# --- 7.2: Multiple Regression Model for College GPA ---
+
+# 1. Load and Filter Data
+college_path = 'upload/CollegeAdmissiondataset.xlsx'
+df = pd.read_excel(college_path)
+
+# Filter to include only enrolled students
+enrolled_df = df[df['Enrolled'] == 'Yes'].copy()
+
+# Drop rows where College_GPA is missing (should be none after filtering, but good practice)
+enrolled_df.dropna(subset=['College_GPA'], inplace=True)
+
+# Define the dependent variable (Y)
+Y = enrolled_df['College_GPA']
+
+# Define potential independent variables (X)
+# Numeric: Edu_Parent1, Edu_Parent2, HSGPA, SAT
+# Categorical: Gender, College, White, Asian (White and Asian are already dummy/binary)
+
+# 2. Feature Engineering: Create Dummy Variables
+# The user requires at least one dummy variable. 'Gender' and 'College' are good candidates.
+# 'White' and 'Asian' are already binary (0/1).
+# We will use 'Gender' and 'College' and keep 'White' and 'Asian'.
+
+# Handle the messy 'College' category observed in exploration: 'Math & ScienceMath & Science&'
+# Assuming this is a data entry error and should be 'Math & Science'.
+enrolled_df['College'] = enrolled_df['College'].replace('Math & ScienceMath & Science&', 'Math & Science')
+
+# Create dummy variables for 'Gender' and 'College'
+X_categorical = pd.get_dummies(enrolled_df[['Gender', 'College']], drop_first=True)
+
+# Select numeric features
+X_numeric = enrolled_df[['Edu_Parent1', 'Edu_Parent2', 'HSGPA', 'SAT', 'White', 'Asian']]
+
+# Combine all independent variables
+X = pd.concat([X_numeric, X_categorical], axis=1)
+
+# Convert all columns in X to numeric type (float) to prevent statsmodels error
+X = X.astype(float)
+
+# Add a constant to the independent variables for the OLS model
+X = sm.add_constant(X, prepend=False)
+
+# 3. Data Splitting (70% Train, 20% Validation, 10% Test/Prediction)
+# First split: 70% Train, 30% Temp (Validation + Test)
+X_train, X_temp, Y_train, Y_temp = train_test_split(X, Y, test_size=0.3, random_state=42)
+
+# Second split: 20% Validation, 10% Test (from the 30% Temp)
+# 20% of 100% is 2/3 of 30%. 10% of 100% is 1/3 of 30%.
+X_val, X_test, Y_val, Y_test = train_test_split(X_temp, Y_temp, test_size=1/3, random_state=42)
+
+# Check the sizes
+print(f"Total enrolled students: {len(enrolled_df)}")
+print(f"Train set size (70%): {len(X_train)}")
+print(f"Validation set size (20%): {len(X_val)}")
+print(f"Test set size (10%): {len(X_test)}")
+
+# 4. Model Training (OLS - Ordinary Least Squares)
+model = sm.OLS(Y_train, X_train)
+results = model.fit()
+
+# 5. Model Validation
+Y_val_pred = results.predict(X_val)
+val_mse = mean_squared_error(Y_val, Y_val_pred)
+val_r2 = r2_score(Y_val, Y_val_pred)
+
+# 6. Model Prediction (on the Test set)
+Y_test_pred = results.predict(X_test)
+test_mse = mean_squared_error(Y_test, Y_test_pred)
+test_r2 = r2_score(Y_test, Y_test_pred)
+
+# 7. Output Results
+print("\n--- Multiple Regression Model Summary (Training Data) ---")
+print(results.summary())
+
+print("\n--- Model Performance ---")
+print(f"Validation Set (20%):")
+print(f"  Mean Squared Error (MSE): {val_mse:.4f}")
+print(f"  R-squared (R2): {val_r2:.4f}")
+print(f"Prediction Set (10%):")
+print(f"  Mean Squared Error (MSE): {test_mse:.4f}")
+print(f"  R-squared (R2): {test_r2:.4f}")
+
+# Save the summary to a file for the final report
+with open('college_gpa_model_summary.txt', 'w') as f:
+    f.write(results.summary().as_text())
+
+# Save predictions for the final report
+prediction_results = pd.DataFrame({
+    'Actual_GPA': Y_test,
+    'Predicted_GPA': Y_test_pred
+})
+prediction_results.to_csv('college_gpa_predictions.csv', index=False)
+
+print("\nResults saved to 'college_gpa_model_summary.txt' and 'college_gpa_predictions.csv'")
